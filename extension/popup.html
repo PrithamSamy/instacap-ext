@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InstaCap</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="popup-header">
+      <div class="logo-row">
+        <div class="logo-icon">🤟</div>
+        <div>
+          <h1>InstaCap</h1>
+          <p class="subtitle">ASL Hand Sign Translator</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="status-card" id="status-card">
+      <div class="status-indicator" id="status-dot"></div>
+      <span id="status-text">Idle</span>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-start" id="btn-start">
+        <span class="btn-icon">▶</span> Start Translation
+      </button>
+      <button class="btn btn-stop" id="btn-stop" disabled>
+        <span class="btn-icon">⏹</span> Stop
+      </button>
+    </div>
+
+    <div class="backend-status" id="backend-status">
+      <span class="backend-dot" id="backend-dot"></span>
+      <span id="backend-text">Checking backend...</span>
+    </div>
+
+    <div class="info-section">
+      <div class="info-item">
+        <span class="info-icon">📹</span>
+        <span>Show ASL signs to your webcam</span>
+      </div>
+      <div class="info-item">
+        <span class="info-icon">✨</span>
+        <span>Predictions appear in overlay</span>
+      </div>
+      <div class="info-item">
+        <span class="info-icon">💬</span>
+        <span>Send text to Meet chat</span>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>Works on <strong>meet.google.com</strong></p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
