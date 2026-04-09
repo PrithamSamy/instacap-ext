@@ -260,44 +260,77 @@
     }
 
     try {
-      // Insert text based on element type
-      if (chatInput.tagName === "TEXTAREA" || chatInput.tagName === "INPUT") {
-        // For textarea/input elements
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-          window.HTMLTextAreaElement.prototype, 'value'
-        ).set || Object.getOwnPropertyDescriptor(
-          window.HTMLInputElement.prototype, 'value'
-        ).set;
-        nativeInputValueSetter.call(chatInput, composedText);
-        chatInput.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        // For contenteditable divs
-        chatInput.focus();
+      // Step 1: Focus the input and inject text
+      chatInput.focus();
+
+      // Use execCommand which works reliably in contenteditable elements
+      // This properly triggers React/Angular's internal input handlers
+      chatInput.textContent = "";
+      document.execCommand("insertText", false, composedText);
+
+      // If execCommand didn't work, fall back to direct assignment
+      if (!chatInput.textContent) {
         chatInput.textContent = composedText;
         chatInput.dispatchEvent(new Event("input", { bubbles: true }));
-        chatInput.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true }));
-        chatInput.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
       }
 
-      // Simulate "Enter" key press to submit the chat
+      // Step 2: Wait briefly for Meet's UI to register the text, then submit
       setTimeout(() => {
-        const enterEventConfig = {
-          bubbles: true, 
-          cancelable: true, 
-          keyCode: 13, 
-          which: 13, 
-          key: 'Enter',
-          code: 'Enter'
-        };
-        
-        chatInput.dispatchEvent(new KeyboardEvent('keydown', enterEventConfig));
-        chatInput.dispatchEvent(new KeyboardEvent('keypress', enterEventConfig));
-        chatInput.dispatchEvent(new KeyboardEvent('keyup', enterEventConfig));
-        
+        let sent = false;
+
+        // Attempt 1: Find and click Meet's send button by aria-label
+        const sendByLabel = document.querySelector(
+          'button[aria-label*="Send" i], button[aria-label*="send a message" i]'
+        );
+        if (sendByLabel) {
+          sendByLabel.click();
+          sent = true;
+        }
+
+        // Attempt 2: Find send button by jsname (Google Meet internal attribute)
+        if (!sent) {
+          const sendByJsname = document.querySelector(
+            '[jsname="r4nke"], [jsname="Jt"], [data-send-button]'
+          );
+          if (sendByJsname) {
+            sendByJsname.click();
+            sent = true;
+          }
+        }
+
+        // Attempt 3: Find any button inside the chat panel that is not disabled
+        if (!sent) {
+          const chatPanel = chatInput.closest('[data-panel-id], [jsname], [role="complementary"]');
+          if (chatPanel) {
+            const buttons = chatPanel.querySelectorAll('button:not([disabled])');
+            // The send button is typically the last button in the chat form
+            const lastButton = buttons[buttons.length - 1];
+            if (lastButton) {
+              lastButton.click();
+              sent = true;
+            }
+          }
+        }
+
+        // Attempt 4: Simulate Enter key on the input as final fallback
+        if (!sent) {
+          const enterConfig = {
+            bubbles: true,
+            cancelable: true,
+            keyCode: 13,
+            which: 13,
+            key: "Enter",
+            code: "Enter"
+          };
+          chatInput.dispatchEvent(new KeyboardEvent("keydown", enterConfig));
+          chatInput.dispatchEvent(new KeyboardEvent("keypress", enterConfig));
+          chatInput.dispatchEvent(new KeyboardEvent("keyup", enterConfig));
+        }
+
         composedText = "";
         updateComposedDisplay();
-        showToast("✅ Message sent!");
-      }, 200);
+        showToast("Message sent!");
+      }, 300);
 
     } catch (err) {
       console.error("[InstaCap] Chat injection error:", err);
