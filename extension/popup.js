@@ -18,7 +18,7 @@ async function checkBackend() {
     if (res.ok) {
       backendDot.classList.add("online");
       backendDot.classList.remove("offline");
-      backendText.textContent = "Backend running ✓";
+      backendText.textContent = "Backend running";
       return true;
     }
   } catch (e) { /* fall through */ }

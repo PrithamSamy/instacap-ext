@@ -6,16 +6,18 @@
 (function () {
   "use strict";
 
-  const BACKEND_URL = "http://localhost:8765";
-  const CAPTURE_INTERVAL_MS = 100;      // Send frame every 100ms
-  const STABILITY_THRESHOLD = 3;        // Same prediction N times before accepting
-  const MIN_CONFIDENCE = 0.45;          // Ignore predictions below this
-  const DEBOUNCE_MS = 800;              // Minimum time between accepted letters
+  const HTTP_URL = "http://localhost:8765";
+  const WS_URL = "ws://localhost:8765/ws";
+  
+  // Adjusted for faster websocket frame rates (~30fps)
+  const STABILITY_THRESHOLD = 5;        
+  const MIN_CONFIDENCE = 0.6;          
+  const DEBOUNCE_MS = 600;              
 
-  // State
   let isRunning = false;
   let stream = null;
-  let captureTimer = null;
+  let ws = null;
+  let captureInterval = null;
   let predictionBuffer = [];
   let composedText = "";
   let lastAcceptedTime = 0;
@@ -41,22 +43,20 @@
         <div id="instacap-confidence-bar"><div id="instacap-confidence-fill"></div></div>
         <div id="instacap-composed-text"></div>
         <div id="instacap-actions">
-          <button class="instacap-btn" id="instacap-send-btn">📩 Send</button>
-          <button class="instacap-btn" id="instacap-clear-btn">🗑 Clear</button>
+          <button class="instacap-btn" id="instacap-send-btn">Send</button>
+          <button class="instacap-btn" id="instacap-clear-btn">Clear</button>
         </div>
         <div id="instacap-status">Connecting...</div>
       </div>
     `;
     document.body.appendChild(overlay);
 
-    // Hidden canvas for frame capture
     canvasElement = document.createElement("canvas");
     canvasElement.width = 640;
     canvasElement.height = 480;
     canvasElement.style.display = "none";
     document.body.appendChild(canvasElement);
 
-    // Event listeners
     document.getElementById("instacap-send-btn").addEventListener("click", sendToMeetChat);
     document.getElementById("instacap-clear-btn").addEventListener("click", clearComposedText);
     document.getElementById("instacap-minimize-btn").addEventListener("click", stopAndRemove);
@@ -64,7 +64,7 @@
     videoElement = document.getElementById("instacap-video");
   }
 
-  // ── Toast notification ─────────────────────────────
+  // ── Toast notification (No emojis) ─────────────────────
   function showToast(message) {
     let toast = document.getElementById("instacap-toast");
     if (!toast) {
@@ -85,12 +85,12 @@
       });
       videoElement.srcObject = stream;
       await videoElement.play();
-      updateStatus("connected", "Connected");
+      updateStatus("connected", "Camera active");
       return true;
     } catch (err) {
       console.error("[InstaCap] Camera error:", err);
       updateStatus("error", "Camera denied");
-      showToast("⚠️ Camera access denied. Please allow camera permissions.");
+      showToast("Camera access denied. Please allow camera permissions.");
       return false;
     }
   }
@@ -102,95 +102,93 @@
     }
   }
 
-  // ── Frame Capture & Prediction ─────────────────────
-  function captureFrame() {
-    if (!videoElement || videoElement.readyState < 2) return null;
-    const ctx = canvasElement.getContext("2d");
-    ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-    // Return base64 JPEG (strip the data:image/jpeg;base64, prefix)
-    const dataUrl = canvasElement.toDataURL("image/jpeg", 0.9);
-    return dataUrl.split(",")[1];
+  // ── Frame Capture & WebSocket ────────────────────────
+  function connectWebSocket() {
+    ws = new WebSocket(WS_URL);
+    
+    ws.onopen = () => {
+      updateStatus("connected", "Detecting...");
+      startStreamingFrames();
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handlePrediction(data);
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      updateStatus("error", "Connection error");
+    };
+
+    ws.onclose = () => {
+      updateStatus("error", "Backend offline");
+      if (captureInterval) {
+        clearInterval(captureInterval);
+        captureInterval = null;
+      }
+    };
   }
 
-  async function sendFrameForPrediction() {
-    if (!isRunning) return;
-
-    const frameData = captureFrame();
-    if (!frameData) return;
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/predict`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: frameData })
-      });
-
-      if (!response.ok) {
-        updateStatus("error", "Backend error");
-        return;
+  function startStreamingFrames() {
+    if (captureInterval) clearInterval(captureInterval);
+    captureInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN && videoElement.readyState >= 2) {
+        const ctx = canvasElement.getContext("2d");
+        ctx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+        const dataUrl = canvasElement.toDataURL("image/jpeg", 0.85);
+        const base64Data = dataUrl.split(",")[1];
+        ws.send(base64Data);
       }
+    }, 60); // approx 16 fps capturing
+  }
 
-      const data = await response.json();
-
-      if (data.error && data.error !== "No hand detected") {
-        updateStatus("error", data.error);
-        return;
-      }
-
-      if (!data.letter || data.letter === "NONE") {
-        document.getElementById("instacap-current-letter").textContent = "—";
-        document.getElementById("instacap-confidence-fill").style.width = "0%";
-        predictionBuffer = [];
-        return;
-      }
-
-      // Confidence filter
-      if (data.confidence < MIN_CONFIDENCE) {
-        return;
-      }
-
-      updateStatus("connected", "Detecting...");
-
-      // Update current letter display
-      document.getElementById("instacap-current-letter").textContent = data.letter;
-      document.getElementById("instacap-confidence-fill").style.width = `${data.confidence * 100}%`;
-
-      // Stability logic: buffer last N predictions
-      processPrediction(data.letter, data.raw);
-
-    } catch (err) {
-      updateStatus("error", "Backend offline");
+  function handlePrediction(data) {
+    if (data.error && data.error !== "No hand detected") {
+      updateStatus("error", data.error);
+      return;
     }
+
+    if (!data.letter || data.letter === "NONE") {
+      document.getElementById("instacap-current-letter").textContent = "—";
+      document.getElementById("instacap-confidence-fill").style.width = "0%";
+      predictionBuffer = [];
+      return;
+    }
+
+    if (data.confidence < MIN_CONFIDENCE) {
+      return;
+    }
+
+    document.getElementById("instacap-current-letter").textContent = data.letter;
+    document.getElementById("instacap-confidence-fill").style.width = `${data.confidence * 100}%`;
+
+    processPrediction(data.letter, data.raw);
   }
 
   // ── Stability / Smoothing ──────────────────────────
   function processPrediction(letter, raw) {
     predictionBuffer.push(letter);
 
-    // Keep buffer at STABILITY_THRESHOLD size
     if (predictionBuffer.length > STABILITY_THRESHOLD) {
       predictionBuffer.shift();
     }
 
-    // Check if all items in buffer are the same
     if (predictionBuffer.length < STABILITY_THRESHOLD) return;
     const allSame = predictionBuffer.every(p => p === predictionBuffer[0]);
     if (!allSame) return;
 
     const stableLetter = predictionBuffer[0];
 
-    // Debounce: don't accept same letter too quickly
     const now = Date.now();
     if (stableLetter === lastAcceptedLetter && (now - lastAcceptedTime) < DEBOUNCE_MS) {
       return;
     }
 
-    // Accept the prediction
     lastAcceptedTime = now;
     lastAcceptedLetter = stableLetter;
     predictionBuffer = [];
 
-    // Handle special commands
     if (stableLetter === "BACKSPACE") {
       composedText = composedText.slice(0, -1);
     } else if (stableLetter === "CLEAR") {
@@ -218,17 +216,13 @@
 
   // ── Google Meet Chat Injection ─────────────────────
   function findMeetChatInput() {
-    // Strategy 1: contenteditable div in chat panel
     const editables = document.querySelectorAll('[contenteditable="true"]');
     for (const el of editables) {
-      // Meet chat input is typically in the chat panel area
       if (el.closest('[data-panel-id]') || el.closest('[aria-label*="chat" i]') ||
           el.closest('[aria-label*="message" i]') || el.closest('[jsname]')) {
         return el;
       }
     }
-
-    // Strategy 2: textarea with chat-related attributes
     const textareas = document.querySelectorAll('textarea');
     for (const ta of textareas) {
       const label = (ta.getAttribute("aria-label") || "").toLowerCase();
@@ -238,12 +232,9 @@
         return ta;
       }
     }
-
-    // Strategy 3: Any contenteditable as last resort
     if (editables.length > 0) {
       return editables[editables.length - 1];
     }
-
     return null;
   }
 
@@ -255,86 +246,54 @@
 
     const chatInput = findMeetChatInput();
     if (!chatInput) {
-      showToast("Chat not found — open Meet chat panel first");
+      showToast("Chat not found. Please open Meet chat panel first.");
       return;
     }
 
     try {
-      // Step 1: Focus the input and inject text
       chatInput.focus();
 
-      // Use execCommand which works reliably in contenteditable elements
-      // This properly triggers React/Angular's internal input handlers
-      chatInput.textContent = "";
-      document.execCommand("insertText", false, composedText);
-
-      // If execCommand didn't work, fall back to direct assignment
-      if (!chatInput.textContent) {
-        chatInput.textContent = composedText;
+      if (chatInput.tagName === "TEXTAREA" || chatInput.tagName === "INPUT") {
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, 'value'
+        ).set || Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value'
+        ).set;
+        
+        if (nativeInputValueSetter) {
+             nativeInputValueSetter.call(chatInput, composedText);
+        } else {
+             chatInput.value = composedText;
+        }
+        chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        // Clear existing text securely and insert new
+        document.execCommand("selectAll", false, null);
+        document.execCommand("insertText", false, composedText);
         chatInput.dispatchEvent(new Event("input", { bubbles: true }));
       }
 
-      // Step 2: Wait briefly for Meet's UI to register the text, then submit
+      // Simulate Enter key specifically to bypass extra standard user input
       setTimeout(() => {
-        let sent = false;
-
-        // Attempt 1: Find and click Meet's send button by aria-label
-        const sendByLabel = document.querySelector(
-          'button[aria-label*="Send" i], button[aria-label*="send a message" i]'
-        );
-        if (sendByLabel) {
-          sendByLabel.click();
-          sent = true;
-        }
-
-        // Attempt 2: Find send button by jsname (Google Meet internal attribute)
-        if (!sent) {
-          const sendByJsname = document.querySelector(
-            '[jsname="r4nke"], [jsname="Jt"], [data-send-button]'
-          );
-          if (sendByJsname) {
-            sendByJsname.click();
-            sent = true;
-          }
-        }
-
-        // Attempt 3: Find any button inside the chat panel that is not disabled
-        if (!sent) {
-          const chatPanel = chatInput.closest('[data-panel-id], [jsname], [role="complementary"]');
-          if (chatPanel) {
-            const buttons = chatPanel.querySelectorAll('button:not([disabled])');
-            // The send button is typically the last button in the chat form
-            const lastButton = buttons[buttons.length - 1];
-            if (lastButton) {
-              lastButton.click();
-              sent = true;
-            }
-          }
-        }
-
-        // Attempt 4: Simulate Enter key on the input as final fallback
-        if (!sent) {
-          const enterConfig = {
+        const enterEvent = new KeyboardEvent("keydown", {
             bubbles: true,
             cancelable: true,
-            keyCode: 13,
-            which: 13,
+            composed: true,
             key: "Enter",
-            code: "Enter"
-          };
-          chatInput.dispatchEvent(new KeyboardEvent("keydown", enterConfig));
-          chatInput.dispatchEvent(new KeyboardEvent("keypress", enterConfig));
-          chatInput.dispatchEvent(new KeyboardEvent("keyup", enterConfig));
-        }
-
+            code: "Enter",
+            keyCode: 13,
+            which: 13
+        });
+        chatInput.dispatchEvent(enterEvent);
+        
         composedText = "";
         updateComposedDisplay();
-        showToast("Message sent!");
-      }, 300);
+        showToast("Message sent.");
+      }, 100);
 
     } catch (err) {
       console.error("[InstaCap] Chat injection error:", err);
-      showToast("❌ Failed to insert text");
+      showToast("Failed to insert text.");
     }
   }
 
@@ -353,13 +312,12 @@
     createOverlay();
     overlay.style.display = "flex";
 
-    // Check backend health
     try {
-      const res = await fetch(`${BACKEND_URL}/health`);
+      const res = await fetch(`${HTTP_URL}/health`);
       if (!res.ok) throw new Error("Backend not ok");
     } catch (e) {
-      updateStatus("error", "Backend offline — start server first");
-      showToast("⚠️ Backend not running. Start the Python server first.");
+      updateStatus("error", "Backend offline");
+      showToast("Backend not running. Start the Python server first.");
       return;
     }
 
@@ -367,15 +325,19 @@
     if (!camOk) return;
 
     isRunning = true;
-    captureTimer = setInterval(sendFrameForPrediction, CAPTURE_INTERVAL_MS);
-    showToast("🤟 InstaCap started — show your signs!");
+    connectWebSocket();
+    showToast("InstaCap translation started.");
   }
 
   function stop() {
     isRunning = false;
-    if (captureTimer) {
-      clearInterval(captureTimer);
-      captureTimer = null;
+    if (captureInterval) {
+      clearInterval(captureInterval);
+      captureInterval = null;
+    }
+    if (ws) {
+      ws.close();
+      ws = null;
     }
     stopCamera();
     predictionBuffer = [];
@@ -386,7 +348,7 @@
     if (overlay) {
       overlay.style.display = "none";
     }
-    showToast("InstaCap stopped");
+    showToast("InstaCap stopped.");
   }
 
   // ── Message from popup ─────────────────────────────
