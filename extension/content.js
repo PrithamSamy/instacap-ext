@@ -279,20 +279,24 @@
         chatInput.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
       }
 
-      // Try to click the send button
+      // Simulate "Enter" key press to submit the chat
       setTimeout(() => {
-        // Look for send button near the chat input
-        const sendButtons = document.querySelectorAll(
-          'button[aria-label*="Send" i], button[data-mdc-dialog-action="send"], [aria-label*="send" i]'
-        );
-        if (sendButtons.length > 0) {
-          sendButtons[sendButtons.length - 1].click();
-          composedText = "";
-          updateComposedDisplay();
-          showToast("✅ Message sent!");
-        } else {
-          showToast("✅ Text inserted — press Enter to send");
-        }
+        const enterEventConfig = {
+          bubbles: true, 
+          cancelable: true, 
+          keyCode: 13, 
+          which: 13, 
+          key: 'Enter',
+          code: 'Enter'
+        };
+        
+        chatInput.dispatchEvent(new KeyboardEvent('keydown', enterEventConfig));
+        chatInput.dispatchEvent(new KeyboardEvent('keypress', enterEventConfig));
+        chatInput.dispatchEvent(new KeyboardEvent('keyup', enterEventConfig));
+        
+        composedText = "";
+        updateComposedDisplay();
+        showToast("✅ Message sent!");
       }, 200);
 
     } catch (err) {
